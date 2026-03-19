@@ -110,7 +110,7 @@ weather_future_daily <- weather_future |>
 
 forecast_horizon <- 30
 forecasted_dates <- seq(from = ymd(forecast_date), to = ymd(forecast_date) + forecast_horizon, by = "day")
-n_members <- 31
+n_members <- 310
 
 # ----- Fit model & generate forecast----
 
