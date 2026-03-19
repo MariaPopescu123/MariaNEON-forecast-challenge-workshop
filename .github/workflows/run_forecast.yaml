@@ -2,11 +2,10 @@ on:
       workflow_dispatch:
       schedule:
       - cron: "0 12 * * *"
-
-    jobs:
+jobs:
       run_forecast:
         runs-on: ubuntu-latest
-          container:
+        container:
           image: eco4cast/rocker-neon4cast
         steps:
           - name: Checkout repo
