@@ -81,7 +81,7 @@ weather_past_daily <- weather_past |>
   summarize(prediction = mean(prediction, na.rm = TRUE), .groups = "drop") |> 
   # convert air temperature to Celsius if it is included in the weather data
   mutate(prediction = ifelse(variable == "air_temperature", prediction - 273.15, prediction)) |> 
-  pivot_wider(names_from = variable, values_from = prediction)
+  pivot_wider(names_from = variable, values_from = prediction) 
 
 # Future weather forecast --------
 # New forecast only available at 5am UTC the next day
@@ -131,11 +131,12 @@ forecast_df <- NULL
 
 for(i in 1:length(focal_sites)) { 
   
-  curr_site <- focal_sites[i] #UNCOMMENT WHEN DONE TESTING
+  # curr_site <- focal_sites[i] #UNCOMMENT WHEN DONE TESTING
+  curr_site <- "BARC" #COMMENT WHEN DONE TESTING
   
   site_target <- targets_lm |>
     filter(site_id == curr_site) |>
-    mutate(temp_yday = lag(temperature))
+    mutate(temp_yday = lag(temperature)) 
   
   noaa_future_site <- weather_future_daily |> 
     filter(site_id == curr_site)
@@ -193,10 +194,13 @@ for(i in 1:length(focal_sites)) {
   # Loop through all forecast dates
   for (t in 1:length(forecasted_dates)) {
     
+    repeat_ens <- rep(weather_ensemble_names, length.out = n_members) #this is 0-30 repeated 
+    
     # Loop over each ensemble member
-    for(ens in 1:n_members){
+    for(ens in 1:n_members){ 
+
+      met_ens <- repeat_ens[ens] #now I am grabbing from the index in repeat_ens 
       
-      met_ens <- weather_ensemble_names[ens]
       
       #pull driver ensemble for the relevant date; here we are using all 31 NOAA ensemble members
       temp_driv <- weather_future_daily %>%
