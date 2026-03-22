@@ -12,6 +12,8 @@
 # ------ Load packages -----
 library(tidyverse)
 library(lubridate)
+library(zoo)
+
 #--------------------------#
 
 # Change this for your model ID
@@ -151,7 +153,8 @@ for(i in 1:length(focal_sites)) {
   
   #Fit linear model based on past data: water temperature = b1 + b2 * yesterday's water temp + b3 * air temperature
   #you will need to change the variable on the left side of the ~ if you are forecasting oxygen or chla
-  fit <- lm(site_target$temperature ~ site_target$temp_yday + site_target$air_temperature)
+  fit <- lm(site_target$temperature ~ site_target$temp_yday +
+              site_target$air_temp_week_avg) #this is the avg fomr last 7 days
   
   #parameter uncertainty
   coeffs <- round(fit$coefficients, 2)
@@ -162,7 +165,8 @@ for(i in 1:length(focal_sites)) {
   #this part needed for parameter uncertainty
   param_df <- data.frame(beta1 = rnorm(n_members, coeffs[1], params_se[1]),
                          beta2 = rnorm(n_members, coeffs[2], params_se[2]),
-                         beta3 = rnorm(n_members, coeffs[3], params_se[3]))
+                         beta3 = rnorm(n_members, coeffs[3], params_se[3]) #keeping this the same bc I removed air temp w no lag
+                         ) 
   
   #this part needed for process uncertainty
   residuals <- mod - site_target$temperature
@@ -198,8 +202,7 @@ for(i in 1:length(focal_sites)) {
   
   forecast_air_temp <- tibble (forecast_date = rep(forecasted_dates, times = n_members),
                                ensemble_member = rep(1:n_members, each = length(forecasted_dates)),
-                               forecast_variable = "water_temperature",
-                               value = as.double(NA))
+                               air_temperature = as.double(NA)) #this is empty at first
   
   #here will make similar frame to store as IC uncert for tracking lagged air temp
   
@@ -219,6 +222,7 @@ for(i in 1:length(focal_sites)) {
         filter(datetime == forecasted_dates[t],
                site_id == curr_site,
                parameter == met_ens)
+      #this is just daily though, need to compute avg prev 7 days now
       
       # pull lagged water temp: use IC uncertainty for first date, previous forecast for subsequent dates
       #had difficulty in this part with the for loop and integrating ensemble members, had help w AI
