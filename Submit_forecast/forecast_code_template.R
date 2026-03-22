@@ -120,11 +120,17 @@ n_members <- 310
 #process uncertainty (done)
 
 
-# Generate a dataframe to fit the model to 
+# Generate a dataframe to fit the model to (can edit this to add temp ylag and air temp avg from last 7 days)
 targets_lm <- targets |> 
   pivot_wider(names_from = 'variable', values_from = 'observation') |> 
   left_join(weather_past_daily, 
-            by = c("datetime","site_id"))
+            by = c("datetime","site_id"))|>
+  group_by(site_id)|>
+  arrange(datetime)|>
+  mutate(temp_yday = lag(temperature), 
+         air_temp_week_avg = lag(rollmean(air_temperature, k = 7, fill = NA, align = "right"), 1))|> #<- used AI to help me with this 
+  ungroup()
+#this is the average of the day before + 6 days prior
 
 # Loop through each site to fit the model
 forecast_df <- NULL
@@ -135,8 +141,7 @@ for(i in 1:length(focal_sites)) {
   curr_site <- "BARC" #COMMENT WHEN DONE TESTING
   
   site_target <- targets_lm |>
-    filter(site_id == curr_site) |>
-    mutate(temp_yday = lag(temperature)) 
+    filter(site_id == curr_site)
   
   noaa_future_site <- weather_future_daily |> 
     filter(site_id == curr_site)
@@ -191,6 +196,13 @@ for(i in 1:length(focal_sites)) {
     rows_update(ic_df, by = c("forecast_date","ensemble_member","forecast_variable",
                               "uc_type")) 
   
+  forecast_air_temp <- tibble (forecast_date = rep(forecasted_dates, times = n_members),
+                               ensemble_member = rep(1:n_members, each = length(forecasted_dates)),
+                               forecast_variable = "water_temperature",
+                               value = as.double(NA))
+  
+  #here will make similar frame to store as IC uncert for tracking lagged air temp
+  
   # Loop through all forecast dates
   for (t in 1:length(forecasted_dates)) {
     
@@ -210,6 +222,7 @@ for(i in 1:length(focal_sites)) {
       
       # pull lagged water temp: use IC uncertainty for first date, previous forecast for subsequent dates
       #had difficulty in this part with the for loop and integrating ensemble members, had help w AI
+      
       if(t == 1){
         temp_lag <- forecast_ic_unc %>%
           filter(forecast_date == forecasted_dates[t],
@@ -233,12 +246,24 @@ for(i in 1:length(focal_sites)) {
         mutate(value = ifelse(forecast_date == forecasted_dates[t] & ensemble_member == ens,
                               forecasted_temperature, value))
       
+      #store air temp same way storing ylag for wtemp
+      forecast_air_temp <- forecast_air_temp %>%
+        mutate(air_temperature = ifelse(
+          forecast_date == forecasted_dates[t] & ensemble_member == ens,
+          temp_driv$air_temperature[1],
+          air_temperature
+        ))
+      
+      #before forecasting computing average for last 7 days (bc this might include forecasted dates 
+      #AND historical dates)
+      
       # put all the relevant information into a tibble that we can bind together
       curr_site_df <- tibble(datetime = forecasted_dates[t],
                              site_id = curr_site,
                              parameter = met_ens,
                              prediction = forecasted_temperature,
                              variable = "temperature") #Change this if you are forecasting a different variable
+      
       
       forecast_df <- dplyr::bind_rows(forecast_df, curr_site_df)
       
