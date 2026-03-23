@@ -139,8 +139,8 @@ forecast_df <- NULL
 
 for(i in 1:length(focal_sites)) { 
   
-  # curr_site <- focal_sites[i] #UNCOMMENT WHEN DONE TESTING
-  curr_site <- "BARC" #COMMENT WHEN DONE TESTING
+  curr_site <- focal_sites[i] #UNCOMMENT WHEN DONE TESTING
+  # curr_site <- "BARC" #COMMENT WHEN DONE TESTING
   
   site_target <- targets_lm |>
     filter(site_id == curr_site)
@@ -178,6 +178,7 @@ for(i in 1:length(focal_sites)) {
   #this part needed for IC uncertainty
   #need to update forecast_date to max datetime, because forecast date is not in the dataframe?
   curr_wt <- site_target %>% #need to update lake_df to site_target
+    filter(!is.na(temperature))|>
     filter(datetime == max(datetime)) %>% # wtemp to temperature
     pull(temperature)
   
@@ -209,7 +210,7 @@ for(i in 1:length(focal_sites)) {
   # Loop through all forecast dates
   for (t in 1:length(forecasted_dates)) {
     
-    t <- 1 #COMMENT WHEN DONE TESTING
+    # t <- 1 #COMMENT WHEN DONE TESTING
     
     repeat_ens <- rep(weather_ensemble_names, length.out = n_members) #this is 0-30 repeated 
     
@@ -217,7 +218,7 @@ for(i in 1:length(focal_sites)) {
     for(ens in 1:n_members){ 
 
     
-      ens <- 2 #COMMENT WHEN DONE TESTING
+      # ens <- 2 #COMMENT WHEN DONE TESTING
       
       met_ens <- repeat_ens[ens] #now I am grabbing from the index in repeat_ens 
       
@@ -229,18 +230,18 @@ for(i in 1:length(focal_sites)) {
                parameter == met_ens)
       #this is just daily though, need to compute avg prev 7 days now
       #need to forecast air temp so that we can calculate
-      forecast_air_temp <- forecast_air_temp|>
-        mutate(air_temperature = ifelse(
-          forecast_date == forecasted_dates[t] & ensemble_member == ens, 
-               temp_driv$air_temperature[1], 
-          air_temperature
-          ))
+      # forecast_air_temp <- forecast_air_temp|>
+      #   mutate(air_temperature = ifelse(
+      #     forecast_date == forecasted_dates[t] & ensemble_member == ens, 
+      #          temp_driv$air_temperature[1], 
+      #     air_temperature
+      #     ))
       
       #now need to combine forecasted air temp with the historical data 
       #going to select (current date - 7) as a filter basically then average 
       
       #df w 7 prior dates 
-      forecasted_air_seven <- forecast_air_temp|>
+      forecasted_air_seven <- forecast_air_temp|> 
         filter(ensemble_member == ens, 
                forecast_date < forecasted_dates[t], #the forecast dates before this current one
                forecast_date >= forecasted_dates[t] - days(7))|> #<- help w AI here. didn't know I could use days(7)
@@ -276,8 +277,8 @@ for(i in 1:length(focal_sites)) {
           pull(value)
       }
       
-      #updated for param + IC + process uncertainty: wt = b1 + [b2 * yesterday's wt] + [b3 * air temp] + W
-      forecasted_temperature <- param_df$beta1[ens] + param_df$beta2[ens] * temp_lag + param_df$beta3[ens] * temp_driv$air_temperature[1] + rnorm(1, mean = 0, sd = sigma) #<- ai helped me integrate process uncertainty here 
+      #updated for param + IC + process uncertainty: wt = b1 + [b2 * yesterday's wt] + [this part replaced by air temp avg] + W
+      forecasted_temperature <- param_df$beta1[ens] + param_df$beta2[ens] * temp_lag + param_df$beta3[ens] * air_temp_week_avg + rnorm(1, mean = 0, sd = sigma) #<- ai helped me integrate process uncertainty here 
       #param uncertainty coming from the coefficients calculated earlier
       #IC uncertainty is set up before the for loop and integrated in the first time step when I make the dataframe
       #process uncertainty is the last part of this equation calculated from sigma earlier from the difference between the model and the observed temperatures. 
