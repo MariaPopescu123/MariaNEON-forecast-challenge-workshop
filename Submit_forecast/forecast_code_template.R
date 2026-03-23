@@ -209,21 +209,58 @@ for(i in 1:length(focal_sites)) {
   # Loop through all forecast dates
   for (t in 1:length(forecasted_dates)) {
     
+    t <- 1 #COMMENT WHEN DONE TESTING
+    
     repeat_ens <- rep(weather_ensemble_names, length.out = n_members) #this is 0-30 repeated 
     
     # Loop over each ensemble member
     for(ens in 1:n_members){ 
 
+    
+      ens <- 2 #COMMENT WHEN DONE TESTING
+      
       met_ens <- repeat_ens[ens] #now I am grabbing from the index in repeat_ens 
       
       
-      #pull driver ensemble for the relevant date; here we are using all 31 NOAA ensemble members
+      #pull driver ensemble for the relevant date; here we are using all 310 NOAA ensemble members
       temp_driv <- weather_future_daily %>%
         filter(datetime == forecasted_dates[t],
                site_id == curr_site,
                parameter == met_ens)
       #this is just daily though, need to compute avg prev 7 days now
+      #need to forecast air temp so that we can calculate
+      forecast_air_temp <- forecast_air_temp|>
+        mutate(air_temperature = ifelse(
+          forecast_date == forecasted_dates[t] & ensemble_member == ens, 
+               temp_driv$air_temperature[1], 
+          air_temperature
+          ))
       
+      #now need to combine forecasted air temp with the historical data 
+      #going to select (current date - 7) as a filter basically then average 
+      
+      #df w 7 prior dates 
+      forecasted_air_seven <- forecast_air_temp|>
+        filter(ensemble_member == ens, 
+               forecast_date < forecasted_dates[t], #the forecast dates before this current one
+               forecast_date >= forecasted_dates[t] - days(7))|> #<- help w AI here. didn't know I could use days(7)
+        select(forecast_date, air_temperature) |>
+        rename(datetime = forecast_date)
+      
+      #now just bind to historical everything and then filter for the last 7 days
+      #site_target is our target 
+      site_target_seven <- site_target|>
+        filter(datetime >= forecasted_dates[t] - days(7), 
+               datetime < forecasted_dates[t])|>
+        select(datetime, air_temperature)
+      
+      combined_seven <- bind_rows(forecasted_air_seven, site_target_seven)|>
+        filter(datetime >= forecasted_dates[t] - days(7), 
+               datetime < forecasted_dates[t])
+      
+      air_temp_week_avg <- mean(combined_seven$air_temperature, na.rm = TRUE)
+      
+        
       # pull lagged water temp: use IC uncertainty for first date, previous forecast for subsequent dates
       #had difficulty in this part with the for loop and integrating ensemble members, had help w AI
       
