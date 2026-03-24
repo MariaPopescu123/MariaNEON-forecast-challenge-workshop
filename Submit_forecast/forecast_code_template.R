@@ -139,11 +139,12 @@ forecast_df <- NULL
 
 for(i in 1:length(focal_sites)) { 
   
-  curr_site <- focal_sites[i] #UNCOMMENT WHEN DONE TESTING
+    curr_site <- focal_sites[i] #UNCOMMENT WHEN DONE TESTING
   # curr_site <- "BARC" #COMMENT WHEN DONE TESTING
   
   site_target <- targets_lm |>
     filter(site_id == curr_site)
+  #THERE IS A GAP THOUGH. THE LAST DATE FOR AIR TEMP IS 4 WEEKS AGOOOOOO
   
   noaa_future_site <- weather_future_daily |> 
     filter(site_id == curr_site)
@@ -154,7 +155,7 @@ for(i in 1:length(focal_sites)) {
   #Fit linear model based on past data: water temperature = b1 + b2 * yesterday's water temp + b3 * air temperature
   #you will need to change the variable on the left side of the ~ if you are forecasting oxygen or chla
   fit <- lm(site_target$temperature ~ site_target$temp_yday +
-              site_target$air_temp_week_avg) #this is the avg fomr last 7 days
+              site_target$air_temp_week_avg) #this is the avg fROM last 7 days
   
   #parameter uncertainty
   coeffs <- round(fit$coefficients, 2)
@@ -239,6 +240,9 @@ for(i in 1:length(focal_sites)) {
       
       #now need to combine forecasted air temp with the historical data 
       #going to select (current date - 7) as a filter basically then average 
+      #BUT NOW REALIZING BC OF THE GAP THIS WILL NEVER WORK. 
+      #MAYBE I INSTEAD THE FIRST AVG_WEEKLY WILL JUST BE WHAT THE LAST AVAILABLE ONE WAS 
+      #THIS WILL BE INNACURATE BUT A SOLUTION
       
       #df w 7 prior dates 
       forecasted_air_seven <- forecast_air_temp|> 
@@ -248,6 +252,7 @@ for(i in 1:length(focal_sites)) {
         select(forecast_date, air_temperature) |>
         rename(datetime = forecast_date)
       
+      #this actually probs not necessary anymore
       #now just bind to historical everything and then filter for the last 7 days
       #site_target is our target 
       site_target_seven <- site_target|>
@@ -259,8 +264,12 @@ for(i in 1:length(focal_sites)) {
         filter(datetime >= forecasted_dates[t] - days(7), 
                datetime < forecasted_dates[t])
       
-      air_temp_week_avg <- mean(combined_seven$air_temperature, na.rm = TRUE)
-      
+      if(t == 1){
+        air_temp_week_avg <- site_target |>
+          filter(datetime == max(datetime, na.rm = TRUE)) |> #I know this is weird, because it doesn't make sense that with the time gap, the value would be the same, but this is my temporary solution so that I at least have a forecast
+          pull(air_temp_week_avg) 
+      }else {air_temp_week_avg <- mean(combined_seven$air_temperature, na.rm = TRUE)
+}
         
       # pull lagged water temp: use IC uncertainty for first date, previous forecast for subsequent dates
       #had difficulty in this part with the for loop and integrating ensemble members, had help w AI
@@ -276,6 +285,8 @@ for(i in 1:length(focal_sites)) {
                  ensemble_member == ens) %>%
           pull(value)
       }
+      
+      
       
       #updated for param + IC + process uncertainty: wt = b1 + [b2 * yesterday's wt] + [this part replaced by air temp avg] + W
       forecasted_temperature <- param_df$beta1[ens] + param_df$beta2[ens] * temp_lag + param_df$beta3[ens] * air_temp_week_avg + rnorm(1, mean = 0, sd = sigma) #<- ai helped me integrate process uncertainty here 
