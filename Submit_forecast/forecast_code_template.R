@@ -13,6 +13,7 @@
 library(tidyverse)
 library(lubridate)
 library(zoo)
+library(duckdbfs)
 
 #--------------------------#
 
