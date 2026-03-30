@@ -1,4 +1,6 @@
-#taken from my other Module 6 repository 
+#Starting a new script to score forecast because a little confused on how to do this!
+#First just pasting my forecast code template and then going to try to score using a past date for the 
+#forecast 
 
 ## install.packages('remotes')
 ## install.packages('tidyverse') # collection of R packages for data manipulation, analysis, and visualisation
@@ -88,7 +90,7 @@ weather_past_daily <- weather_past |>
 
 # Future weather forecast --------
 # New forecast only available at 5am UTC the next day
-forecast_date <- Sys.Date() 
+forecast_date <- as.Date("2026-01-28") #changed date here to a past date that I know also will have dates in the target
 noaa_date <- forecast_date - days(1)
 
 weather_future_s3 <- neon4cast::noaa_stage2(start_date = as.character(noaa_date))
@@ -140,7 +142,7 @@ forecast_df <- NULL
 
 for(i in 1:length(focal_sites)) { 
   
-    curr_site <- focal_sites[i] #UNCOMMENT WHEN DONE TESTING
+  curr_site <- focal_sites[i] #UNCOMMENT WHEN DONE TESTING
   # curr_site <- "BARC" #COMMENT WHEN DONE TESTING
   
   site_target <- targets_lm |>
@@ -168,7 +170,7 @@ for(i in 1:length(focal_sites)) {
   param_df <- data.frame(beta1 = rnorm(n_members, coeffs[1], params_se[1]),
                          beta2 = rnorm(n_members, coeffs[2], params_se[2]),
                          beta3 = rnorm(n_members, coeffs[3], params_se[3]) #keeping this the same bc I removed air temp w no lag
-                         ) 
+  ) 
   
   #this part needed for process uncertainty
   residuals <- mod - site_target$temperature
@@ -218,8 +220,8 @@ for(i in 1:length(focal_sites)) {
     
     # Loop over each ensemble member
     for(ens in 1:n_members){ 
-
-    
+      
+      
       # ens <- 2 #COMMENT WHEN DONE TESTING
       
       met_ens <- repeat_ens[ens] #now I am grabbing from the index in repeat_ens 
@@ -270,8 +272,8 @@ for(i in 1:length(focal_sites)) {
           filter(datetime == max(datetime, na.rm = TRUE)) |> #I know this is weird, because it doesn't make sense that with the time gap, the value would be the same, but this is my temporary solution so that I at least have a forecast
           pull(air_temp_week_avg) 
       }else {air_temp_week_avg <- mean(combined_seven$air_temperature, na.rm = TRUE)
-}
-        
+      }
+      
       # pull lagged water temp: use IC uncertainty for first date, previous forecast for subsequent dates
       #had difficulty in this part with the for loop and integrating ensemble members, had help w AI
       
@@ -370,5 +372,36 @@ plot_file_name <- paste0("Submit_forecast/", forecast_df_EFI$variable[1], '-', f
 ggsave(plot_file_name)
 
 #score forecast####
+library(scoringRules)
 
+#what actually happened
+observations <- targets |>
+  filter(variable == "temperature",
+         site_id %in% focal_sites,
+         datetime >= forecast_date,
+         datetime <= forecast_date + days(forecast_horizon))
 
+forecast_df_EFI |> 
+  left_join(observations, by = c("datetime", "site_id", "variable")) |>
+  ggplot(aes(x=datetime, y=prediction, group = parameter)) +
+  geom_line() +
+  geom_point(data = observations, aes(x = datetime, y = observation), 
+             color = "red", size = 2, inherit.aes = FALSE) +  facet_wrap(~site_id) +
+  labs(title = paste0('Forecast generated for ', forecast_df_EFI$variable[1], ' on ', forecast_df_EFI$reference_datetime[1]))
+
+#plus what my predictions are 
+scored_forecast <- forecast_df_EFI |>
+  left_join(observations, by = c("datetime", "site_id", "variable")) |>
+  filter(!is.na(observation)) |> 
+  group_by(datetime, site_id) |>
+  summarize( crps = crps_sample(y = first(observation), # what actually happened
+      dat = prediction # my predictions
+    ),
+    .groups = "drop"
+  )
+
+scored_forecast |>
+  group_by(site_id) |>
+  summarize(mean_crps = mean(crps, na.rm = TRUE))
+
+#well I have scores for BARC and SUGG
