@@ -1,0 +1,62 @@
+---
+title: "eco_forecasting_scoring"
+format: html
+editor: visual
+---
+
+## Assignment by Maria Popescu
+
+Accessing climatology, persistence, and model of my choice
+
+```{r}
+library(tidyverse)
+library(arrow)
+library(kableExtra)
+library(scoringRules)
+library(duckdbfs)
+
+
+#replacing example code from STAC catalg w this
+all_results <- duckdbfs::open_dataset("s3://bio230014-bucket01/challenges/forecasts/bundled-parquet/project_id=neon4cast/duration=P1D/variable=temperature", s3_endpoint="sdsc.osn.xsede.org", anonymous=TRUE)
+
+check <- all_results|>
+  filter(site_id == "BARC")|>
+  distinct(model_id, reference_datetime)
+
+my_forecasts <- all_results |> 
+  filter(reference_datetime == as_datetime("2025-03-24 00:00:00"),
+         site_id == "BARC",
+         model_id %in% c("climatology", "persistenceRW", "air2waterSat_2")) |> 
+  collect()
+
+#OR
+# 
+# baseline_models <- arrow::open_dataset("s3://anonymous@bio230014-bucket01/challenges/scores/bundled-parquet/project_id=neon4cast/duration=P1D/variable=temperature?endpoint_override=sdsc.osn.xsede.org") |> 
+#   filter(site_id == "BARC",
+#          reference_datetime > lubridate::as_datetime("2024-09-01"),
+#          reference_datetime < lubridate::as_datetime("2024-10-31"),
+#          model_id %in% c("climatology", "persistenceRW")) |> 
+#   collect() 
+
+```
+
+Access observations
+
+```{r}
+#| echo: false
+url <- "https://sdsc.osn.xsede.org/bio230014-bucket01/challenges/targets/project_id=neon4cast/duration=P1D/aquatics-targets.csv.gz"
+targets <- read_csv(url)
+
+# Filter to only the datetime, variable, and site_id that match our single forecast
+targets_single_forecast <- targets |> 
+  filter(datetime >= as_datetime("2025-03-24 00:00:00"),
+         datetime <= as_datetime("2025-04-28 00:00:00"),
+         variable == "temperature",
+         site_id == "BARC")
+```
+
+Plot 3 forecasts using ribbon plot. Add observations
+
+```{r}
+
+```
