@@ -126,8 +126,8 @@ n_members <- 310
 # Generate a dataframe to fit the model to (can edit this to add temp ylag and air temp avg from last 7 days)
 targets_lm <- targets |> 
   pivot_wider(names_from = 'variable', values_from = 'observation') |> 
-  left_join(weather_past_daily, 
-            by = c("datetime","site_id"))|>
+  full_join(weather_past_daily, 
+            by = c("datetime","site_id"))|> #i think the issue is i was joining this and losing weather data, full_join instead of left_join
   group_by(site_id)|>
   arrange(datetime)|>
   mutate(temp_yday = lag(temperature), 
@@ -135,17 +135,19 @@ targets_lm <- targets |>
   ungroup()
 #this is the average of the day before + 6 days prior
 
+
 # Loop through each site to fit the model
 forecast_df <- NULL
 
 for(i in 1:length(focal_sites)) { 
   
     curr_site <- focal_sites[i] #UNCOMMENT WHEN DONE TESTING
-  # curr_site <- "BARC" #COMMENT WHEN DONE TESTING
+  # curr_site <- "PRPO" #COMMENT WHEN DONE TESTING
   
   site_target <- targets_lm |>
     filter(site_id == curr_site)
   #THERE IS A GAP THOUGH. THE LAST DATE FOR AIR TEMP IS 4 WEEKS AGOOOOOO
+  #no air temp past 2025
   
   noaa_future_site <- weather_future_daily |> 
     filter(site_id == curr_site)
@@ -212,7 +214,7 @@ for(i in 1:length(focal_sites)) {
   # Loop through all forecast dates
   for (t in 1:length(forecasted_dates)) {
     
-    # t <- 1 #COMMENT WHEN DONE TESTING
+     #t <- 4 #COMMENT WHEN DONE TESTING
     
     repeat_ens <- rep(weather_ensemble_names, length.out = n_members) #this is 0-30 repeated 
     
