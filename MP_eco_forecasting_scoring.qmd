@@ -6,7 +6,7 @@ editor: visual
 
 ## Assignment by Maria Popescu
 
-Accessing climatology, persistence, and model of my choice
+1.  Accessing climatology, persistence, and model of my choice
 
 ```{r}
 library(tidyverse)
@@ -15,19 +15,37 @@ library(kableExtra)
 library(scoringRules)
 library(duckdbfs)
 
+my_forecasts <- read_csv("my_forecasts.csv")
+new_model <- read_csv("new_model.csv")
+```
+
+```{r}
 
 #replacing example code from STAC catalg w this
 all_results <- duckdbfs::open_dataset("s3://bio230014-bucket01/challenges/forecasts/bundled-parquet/project_id=neon4cast/duration=P1D/variable=temperature", s3_endpoint="sdsc.osn.xsede.org", anonymous=TRUE)
 
-check <- all_results|>
-  filter(site_id == "BARC")|>
-  distinct(model_id, reference_datetime)
-
 my_forecasts <- all_results |> 
   filter(reference_datetime == as_datetime("2025-03-24 00:00:00"),
          site_id == "BARC",
-         model_id %in% c("climatology", "persistenceRW", "air2waterSat_2")) |> 
+         model_id %in% c("climatology", "persistenceRW")) |> 
   collect()
+
+library(readr)
+# write_csv(my_forecasts, "my_forecasts.csv")
+
+
+#now trying to pull in another model
+new_model <- duckdbfs::open_dataset(
+  "s3://bio230014-bucket01/challenges/forecasts/bundled-parquet/project_id=neon4cast/duration=P1D/variable=temperature",
+  s3_endpoint = "sdsc.osn.xsede.org",
+  anonymous = TRUE
+) |>
+  filter(reference_datetime == as_datetime("2025-03-24 00:00:00"),
+         site_id == "BARC",
+         model_id %in% c("bee_bake_RFModel_2024")) |> 
+  collect()
+
+#write_csv(new_model, "new_model.csv")
 
 #OR
 # 
@@ -40,7 +58,7 @@ my_forecasts <- all_results |>
 
 ```
 
-Access observations
+2.  Access observations
 
 ```{r}
 #| echo: false
@@ -49,14 +67,194 @@ targets <- read_csv(url)
 
 # Filter to only the datetime, variable, and site_id that match our single forecast
 targets_single_forecast <- targets |> 
+  mutate(datetime = as_datetime(datetime))|>
   filter(datetime >= as_datetime("2025-03-24 00:00:00"),
          datetime <= as_datetime("2025-04-28 00:00:00"),
          variable == "temperature",
          site_id == "BARC")
 ```
 
-Plot 3 forecasts using ribbon plot. Add observations
+3.  Plot 3 forecasts using ribbon plot. Add observations
 
 ```{r}
+my_forecasts |> 
+  filter(model_id == "climatology") |> 
+  pivot_wider(names_from = parameter, values_from = prediction) |> 
+  mutate(lower_2.5 = mu - 1.96*sigma,
+         upper_97.5 = mu + 1.96*sigma) |> 
+  ggplot(aes(x = datetime)) +
+  geom_ribbon(aes(ymin = lower_2.5, ymax = upper_97.5), fill = "lightblue") +
+  geom_line(aes(y = mu)) +
+  geom_point(data = targets_single_forecast, aes(x = datetime, y = observation), color = "red", size = 2)
+
+
+my_forecasts |>
+  filter(model_id == "persistenceRW") |>
+  group_by(datetime, model_id) |>
+  summarise(mu = mean(prediction),
+            lower_2.5 = quantile(prediction, 0.025),
+            upper_97.5 = quantile(prediction, 0.975),
+            .groups = "drop") |>
+  ggplot(aes(x = datetime)) +
+  geom_ribbon(aes(ymin = lower_2.5, ymax = upper_97.5), fill = "lightblue") +
+  geom_line(aes(y = mu)) +
+  geom_point(data = targets_single_forecast, aes(x = datetime, y = observation), color = "red", size = 2)
+
+new_model |>
+  filter(model_id == "bee_bake_RFModel_2024") |>
+  group_by(datetime, model_id) |>
+  summarise(mu = mean(prediction),
+            lower_2.5 = quantile(prediction, 0.025),
+            upper_97.5 = quantile(prediction, 0.975),
+            .groups = "drop") |>
+  ggplot(aes(x = datetime)) +
+  geom_ribbon(aes(ymin = lower_2.5, ymax = upper_97.5), fill = "lightblue") +
+  geom_line(aes(y = mu)) +
+  geom_point(data = targets_single_forecast, aes(x = datetime, y = observation), color = "red", size = 2)
+
+
+# All 3 forecasts on one plot
+clim_summary <- my_forecasts |>
+  filter(model_id == "climatology") |>
+  pivot_wider(names_from = parameter, values_from = prediction) |>
+  mutate(lower_2.5 = mu - 1.96*sigma,
+         upper_97.5 = mu + 1.96*sigma) |>
+  select(datetime, model_id, mu, lower_2.5, upper_97.5)
+
+pers_summary <- my_forecasts |>
+  filter(model_id == "persistenceRW") |>
+  group_by(datetime, model_id) |>
+  summarise(mu = mean(prediction),
+            lower_2.5 = quantile(prediction, 0.025),
+            upper_97.5 = quantile(prediction, 0.975),
+            .groups = "drop")
+
+rf_summary <- new_model |>
+  filter(model_id == "bee_bake_RFModel_2024") |>
+  group_by(datetime, model_id) |>
+  summarise(mu = mean(prediction),
+            lower_2.5 = quantile(prediction, 0.025),
+            upper_97.5 = quantile(prediction, 0.975),
+            .groups = "drop")
+
+all_forecasts <- bind_rows(clim_summary, pers_summary, rf_summary)
+
+ggplot(all_forecasts, aes(x = datetime, color = model_id, fill = model_id)) +
+  geom_ribbon(aes(ymin = lower_2.5, ymax = upper_97.5), alpha = 0.2, color = NA) +
+  geom_line(aes(y = mu)) +
+  geom_point(data = targets_single_forecast,
+             aes(x = datetime, y = observation),
+             inherit.aes = FALSE, color = "black", size = 2) +
+  labs(y = "temperature", color = "model", fill = "model")
 
 ```
+
+4.  Based on visual inspection of your plot for the one forecast period, how does each model differ in capacity to represent the observations?
+
+    bee_bake has a more narrow confidence interval sometimes, and does not capture all the observations but seems to follow the actual observations way better than persistence.
+
+    climatology seems to perform very similar to bee_bake, but has one additional data point outside of the confidence interval. So I would say bee_bake will probably score better.
+
+5.  Based on visual inspection of your plot, how does the uncertainty of each model forecast differ in its capacity to capture the observations?
+
+    Persistence model confidence interval is very wide but still missing just as many observations as bee_bake whereas climatology has a consistent confidence interval but it doesn't follow the sharp changes in observations that bee_bake is able to capture slightly better.
+
+    6.  Using the scoringRules package, calculate the CRPS for each model and forecasted datetime.
+
+    ```{r}
+    obs <- targets_single_forecast |> select(datetime, observation)
+
+    # Climatology is normal distribution (mu, sigma)
+    clim_crps <- my_forecasts |>
+      filter(model_id == "climatology") |>
+      pivot_wider(names_from = parameter, values_from = prediction) |>
+      inner_join(obs, by = "datetime") |>
+      mutate(crps = crps_norm(y = observation, mean = mu, sd = sigma)) |>
+      select(datetime, model_id, crps)
+
+    # Persistence has ensemble
+    pers_crps <- my_forecasts |>
+      filter(model_id == "persistenceRW") |>
+      inner_join(obs, by = "datetime") |>
+      group_by(datetime, model_id) |>
+      summarise(crps = crps_sample(y = unique(observation), dat = prediction),
+                .groups = "drop")
+
+    # RF model also has ensemble
+    rf_crps <- new_model |>
+      filter(model_id == "bee_bake_RFModel_2024") |>
+      inner_join(obs, by = "datetime") |>
+      group_by(datetime, model_id) |>
+      summarise(crps = crps_sample(y = unique(observation), dat = prediction),
+                .groups = "drop")
+
+    crps_all <- bind_rows(clim_crps, pers_crps, rf_crps)
+    crps_all
+    ```
+
+    7.  Plot how CRPS vs. datetime for each model on the same plot and compare the results to your visual inspections in questions 4 and 5.
+
+```{r}
+ggplot(crps_all, aes(x = datetime, y = crps, color = model_id)) +
+  geom_line() +
+  geom_point() +
+  labs(y = "CRPS", color = "model")
+```
+
+It would appear that the climatology model seems to be performing better for the most part actually.
+
+8.  Download all the forecasts generated by climatology, persistence, and your chosen model (your will have multiple reference_datetimes).
+
+    ```{r}
+    all_forecasts_full <- duckdbfs::open_dataset(
+      "s3://bio230014-bucket01/challenges/forecasts/bundled-parquet/project_id=neon4cast/duration=P1D/variable=temperature",
+      s3_endpoint = "sdsc.osn.xsede.org",
+      anonymous = TRUE
+    ) |>
+      filter(site_id == "BARC",
+             model_id %in% c("climatology", "persistenceRW", "bee_bake_RFModel_2024")) |>
+      collect()
+
+    #write_csv(all_forecasts_full, "all_forecasts_full.csv")
+    ```
+
+9.  Calculate the mean CRPS for climatology, persistence, and your model for all reference datetimes and horizons. Which model has the lower score when you consider all submissions?
+
+    ```{r}
+    obs_all <- targets |>
+      mutate(datetime = as_datetime(datetime)) |>
+      filter(variable == "temperature", site_id == "BARC") |>
+      select(datetime, observation)
+
+    # Climatology (normal)
+    clim_all <- all_forecasts_full |>
+      filter(model_id == "climatology") |>
+      pivot_wider(names_from = parameter, values_from = prediction) |>
+      inner_join(obs_all, by = "datetime") |>
+      filter(!is.na(observation), !is.na(mu), !is.na(sigma)) |>
+      mutate(crps = crps_norm(y = observation, mean = mu, sd = sigma)) |>
+      select(reference_datetime, datetime, model_id, crps)
+
+    # Ensemble models
+    ens_all <- all_forecasts_full |>
+      filter(model_id %in% c("persistenceRW", "bee_bake_RFModel_2024")) |>
+      inner_join(obs_all, by = "datetime") |>
+      filter(!is.na(observation), !is.na(prediction)) |>
+      group_by(reference_datetime, datetime, model_id) |>
+      summarise(crps = crps_sample(y = unique(observation), dat = prediction),
+                .groups = "drop")
+
+    crps_full <- bind_rows(clim_all, ens_all)
+
+    mean_crps <- crps_full |>
+      group_by(model_id) |>
+      summarise(mean_crps = mean(crps, na.rm = TRUE),
+                n = n(),
+                .groups = "drop") |>
+      arrange(mean_crps)
+    mean_crps
+    ```
+
+10. Do you think you have enough information from the mean CRPS score to determine the “best” model? If not, what is needed to better characterize the best-performing model?
+
+    The bee_bake model has the best CRPS score, but I do not think it's enough information. It doesn't compare performance with horizon either. Also, I think that there are other important characterization metrics that could be developed depending on how important a significantly different event is. For example a model that can predict very extreme conditions well may not perform as well as one that is consistently ok, but those extreme conditions could be very important (ie flooding events). Also skill score would provide more context for comparing across models.
