@@ -1,0 +1,459 @@
+Reforecast analysis 4//6/2025
+Maria Popescu
+
+repository link: https://github.com/MariaPopescu123/MariaNEON-forecast-challenge-workshop
+
+1.  Accessing climatology, persistence, and MY MODEL for "BARC"
+
+```{r}
+library(tidyverse)
+library(arrow)
+library(kableExtra)
+library(scoringRules)
+library(duckdbfs)
+```
+
+```{r}
+
+#replacing example code from STAC catalg w this
+all_results <- duckdbfs::open_dataset("s3://bio230014-bucket01/challenges/forecasts/bundled-parquet/project_id=neon4cast/duration=P1D/variable=temperature", s3_endpoint="sdsc.osn.xsede.org", anonymous=TRUE)
+
+my_forecasts <- all_results |> 
+  filter(reference_datetime == as_datetime("2025-03-24 00:00:00"),
+         site_id == "BARC",
+         model_id %in% c("climatology", "persistenceRW")) |> 
+  collect()
+
+library(readr)
+# write_csv(my_forecasts, "my_forecasts.csv")
+
+#NOW ADDING MY MODEL
+# Change this for your model ID
+# Include the word "example" in my_model_id for a test submission
+# Don't include the word "example" in my_model_id for a forecast that you have registered (see neon4cast.org for the registration form)
+my_model_id <- 'maria_example_ID'
+
+#------- Read data --------
+# read in the targets data
+targets <- read_csv("https://sdsc.osn.xsede.org/bio230014-bucket01/challenges/targets/project_id=neon4cast/duration=P1D/aquatics-targets.csv.gz")
+
+# read in the sites data
+aquatic_sites <- read_csv("https://raw.githubusercontent.com/eco4cast/neon4cast-ci/refs/heads/main/neon4cast_field_site_metadata.csv") |>
+  dplyr::filter(aquatics == 1)
+
+focal_sites <- c("BARC")
+
+# Filter the targets
+targets <- targets %>%
+  filter(site_id %in% focal_sites,
+         variable == 'temperature')
+#--------------------------#
+
+# ------ Weather data ------
+met_variables <- c("air_temperature")
+
+# Past stacked weather -----
+weather_past_s3 <- neon4cast::noaa_stage3()
+
+weather_past <- weather_past_s3  |> 
+  dplyr::filter(site_id %in% focal_sites,
+                datetime >= ymd('2017-01-01'),
+                variable %in% met_variables) |> 
+  dplyr::collect()
+
+# aggregate the past to mean values
+weather_past_daily <- weather_past |> 
+  mutate(datetime = as_date(datetime)) |> 
+  group_by(datetime, site_id, variable) |> 
+  summarize(prediction = mean(prediction, na.rm = TRUE), .groups = "drop") |> 
+  # convert air temperature to Celsius if it is included in the weather data
+  mutate(prediction = ifelse(variable == "air_temperature", prediction - 273.15, prediction)) |> 
+  pivot_wider(names_from = variable, values_from = prediction) 
+
+# Future weather forecast --------
+# New forecast only available at 5am UTC the next day
+forecast_date <- Sys.Date() 
+noaa_date <- forecast_date - days(1)
+
+weather_future_s3 <- neon4cast::noaa_stage2(start_date = as.character(noaa_date))
+
+weather_future <- weather_future_s3 |> 
+  dplyr::filter(datetime >= forecast_date,
+                site_id %in% focal_sites,
+                variable %in% met_variables) |> 
+  collect()
+
+weather_future_daily <- weather_future |> 
+  mutate(datetime = as_date(datetime)) |> 
+  # mean daily forecasts at each site per ensemble
+  group_by(datetime, site_id, parameter, variable) |> 
+  summarize(prediction = mean(prediction, na.rm = TRUE), .groups = "drop") |> 
+  # convert air temperature to Celsius if it is included in the weather data
+  mutate(prediction = ifelse(variable == "air_temperature", prediction - 273.15, prediction)) |> 
+  pivot_wider(names_from = variable, values_from = prediction) |> 
+  select(any_of(c('datetime', 'site_id', met_variables, 'parameter')))
+
+#--------------------------#
+
+forecast_horizon <- 35
+forecasted_dates <- seq(from = ymd(forecast_date), to = ymd(forecast_date) + forecast_horizon, by = "day")
+n_members <- 31
+
+# ----- Fit model & generate forecast----
+
+#initial condition uncertainty (from water temp done)
+#parameter uncertainty (done)
+#driver uncertainty (from the 31 NOAA ensemble members)
+#process uncertainty (done)
+
+
+# Generate a dataframe to fit the model to (can edit this to add temp ylag and air temp avg from last 7 days)
+targets_lm <- targets |> 
+  pivot_wider(names_from = 'variable', values_from = 'observation') |> 
+  full_join(weather_past_daily, 
+            by = c("datetime","site_id"))|> #i think the issue is i was joining this and losing weather data, full_join instead of left_join
+  group_by(site_id)|>
+  arrange(datetime)|>
+  mutate(temp_yday = lag(temperature), 
+         air_temp_week_avg = lag(rollmean(air_temperature, k = 7, fill = NA, align = "right"), 1))|> #<- used AI to help me with this 
+  ungroup()
+#this is the average of the day before + 6 days prior
+
+
+# Loop through each site to fit the model
+forecast_df <- NULL
+
+for(i in 1:length(focal_sites)) { 
+  
+    curr_site <- focal_sites[i] #UNCOMMENT WHEN DONE TESTING
+  # curr_site <- "PRPO" #COMMENT WHEN DONE TESTING
+  
+  site_target <- targets_lm |>
+    filter(site_id == curr_site)
+  #THERE IS A GAP THOUGH. THE LAST DATE FOR AIR TEMP IS 4 WEEKS AGOOOOOO
+  #no air temp past 2025
+  
+  noaa_future_site <- weather_future_daily |> 
+    filter(site_id == curr_site)
+  
+  weather_ensemble_names <- unique(noaa_future_site$parameter)
+  
+  
+  #Fit linear model based on past data: water temperature = b1 + b2 * yesterday's water temp + b3 * air temperature
+  #you will need to change the variable on the left side of the ~ if you are forecasting oxygen or chla
+  fit <- lm(site_target$temperature ~ site_target$temp_yday +
+              site_target$air_temp_week_avg) #this is the avg fROM last 7 days
+  
+  #parameter uncertainty
+  coeffs <- round(fit$coefficients, 2)
+  fit_summary <- summary(fit)
+  params_se <- fit_summary$coefficients[,2]
+  mod <- predict(fit, site_target) #replace model_data with site_target
+  
+  #this part needed for parameter uncertainty
+  param_df <- data.frame(beta1 = rnorm(n_members, coeffs[1], params_se[1]),
+                         beta2 = rnorm(n_members, coeffs[2], params_se[2]),
+                         beta3 = rnorm(n_members, coeffs[3], params_se[3]) #keeping this the same bc I removed air temp w no lag
+                         ) 
+  
+  #this part needed for process uncertainty
+  residuals <- mod - site_target$temperature
+  sigma <- sd(residuals, na.rm = TRUE) # Process Uncertainty Noise Std Dev.; this is your sigma
+  #used ai here^ to help me figure out how to introduce process uncertainty
+  #but I understand that process uncertainty is what the model essentially doesn't capture. 
+  #it's just the difference between model temperature and what the actual temperature is 
+  
+  #this part needed for IC uncertainty
+  #need to update forecast_date to max datetime, because forecast date is not in the dataframe?
+  curr_wt <- site_target %>% #need to update lake_df to site_target
+    filter(!is.na(temperature))|>
+    filter(datetime == max(datetime)) %>% # wtemp to temperature
+    pull(temperature)
+  
+  ic_sd <- 0.1
+  ic_uc <- rnorm(n = n_members, mean = curr_wt, sd = ic_sd) #this adds random noise based around my current wt to produce IC uncertainty
+  
+  #for each ensemble member there is now a diff IC value saved in this df to start it off
+  #this from module 6 rmd
+  ic_df <- tibble(forecast_date = rep(as.Date(forecast_date), times = n_members),
+                  ensemble_member = c(1:n_members),
+                  forecast_variable = "water_temperature",
+                  value = ic_uc,
+                  uc_type = "initial_conditions")
+  
+  forecast_ic_unc <- tibble(forecast_date = rep(forecasted_dates, times = n_members),
+                            ensemble_member = rep(1:n_members, each = length(forecasted_dates)),
+                            forecast_variable = "water_temperature",
+                            value = as.double(NA),
+                            uc_type = "initial_conditions") %>%
+    rows_update(ic_df, by = c("forecast_date","ensemble_member","forecast_variable",
+                              "uc_type")) 
+  
+  forecast_air_temp <- tibble (forecast_date = rep(forecasted_dates, times = n_members),
+                               ensemble_member = rep(1:n_members, each = length(forecasted_dates)),
+                               air_temperature = as.double(NA)) #this is empty at first
+  
+  #here will make similar frame to store as IC uncert for tracking lagged air temp
+  
+  # Loop through all forecast dates
+  for (t in 1:length(forecasted_dates)) {
+    
+     #t <- 4 #COMMENT WHEN DONE TESTING
+  
+    repeat_ens <- rep(weather_ensemble_names, length.out = n_members) #this is 0-30 repeated 
+    
+    # Loop over each ensemble member
+    for(ens in 1:n_members){ 
+
+    
+      # ens <- 2 #COMMENT WHEN DONE TESTING
+      
+      met_ens <- repeat_ens[ens] #now I am grabbing from the index in repeat_ens 
+      
+      
+      #pull driver ensemble for the relevant date; here we are using all 310 NOAA ensemble members
+      temp_driv <- weather_future_daily %>%
+        filter(datetime == forecasted_dates[t],
+               site_id == curr_site,
+               parameter == met_ens)
+      #this is just daily though, need to compute avg prev 7 days now
+      #need to forecast air temp so that we can calculate
+      # forecast_air_temp <- forecast_air_temp|>
+      #   mutate(air_temperature = ifelse(
+      #     forecast_date == forecasted_dates[t] & ensemble_member == ens, 
+      #          temp_driv$air_temperature[1], 
+      #     air_temperature
+      #     ))
+      
+      #now need to combine forecasted air temp with the historical data 
+      #going to select (current date - 7) as a filter basically then average 
+      #BUT NOW REALIZING BC OF THE GAP THIS WILL NEVER WORK. 
+      #MAYBE I INSTEAD THE FIRST AVG_WEEKLY WILL JUST BE WHAT THE LAST AVAILABLE ONE WAS 
+      #THIS WILL BE INNACURATE BUT A SOLUTION
+      
+      #df w 7 prior dates 
+      forecasted_air_seven <- forecast_air_temp|> 
+        filter(ensemble_member == ens, 
+               forecast_date < forecasted_dates[t], #the forecast dates before this current one
+               forecast_date >= forecasted_dates[t] - days(7))|> #<- help w AI here. didn't know I could use days(7)
+        select(forecast_date, air_temperature) |>
+        rename(datetime = forecast_date)
+      
+      #this actually probs not necessary anymore
+      #now just bind to historical everything and then filter for the last 7 days
+      #site_target is our target 
+      site_target_seven <- site_target|>
+        filter(datetime >= forecasted_dates[t] - days(7), 
+               datetime < forecasted_dates[t])|>
+        select(datetime, air_temperature)
+      
+      combined_seven <- bind_rows(forecasted_air_seven, site_target_seven)|>
+        filter(datetime >= forecasted_dates[t] - days(7), 
+               datetime < forecasted_dates[t])
+      
+      if(t == 1){
+        air_temp_week_avg <- site_target |>
+          filter(datetime == max(datetime, na.rm = TRUE)) |> #I know this is weird, because it doesn't make sense that with the time gap, the value would be the same, but this is my temporary solution so that I at least have a forecast
+          pull(air_temp_week_avg) 
+      }else {air_temp_week_avg <- mean(combined_seven$air_temperature, na.rm = TRUE)
+}
+        
+      # pull lagged water temp: use IC uncertainty for first date, previous forecast for subsequent dates
+      #had difficulty in this part with the for loop and integrating ensemble members, had help w AI
+      
+      if(t == 1){
+        temp_lag <- forecast_ic_unc %>%
+          filter(forecast_date == forecasted_dates[t],
+                 ensemble_member == ens) %>%
+          pull(value)
+      } else {
+        temp_lag <- forecast_ic_unc %>%
+          filter(forecast_date == forecasted_dates[t-1],
+                 ensemble_member == ens) %>%
+          pull(value)
+      }
+      
+      
+      #updated for param + IC + process uncertainty: wt = b1 + [b2 * yesterday's wt] + [this part replaced by air temp avg] + W
+      forecasted_temperature <- param_df$beta1[ens] + param_df$beta2[ens] * temp_lag + param_df$beta3[ens] * air_temp_week_avg + rnorm(1, mean = 0, sd = sigma) #<- ai helped me integrate process uncertainty here 
+      #param uncertainty coming from the coefficients calculated earlier
+      #IC uncertainty is set up before the for loop and integrated in the first time step when I make the dataframe
+      #process uncertainty is the last part of this equation calculated from sigma earlier from the difference between the model and the observed temperatures. 
+      
+      # store forecast back into forecast_ic_unc so it can be used as lag for next timestep
+      forecast_ic_unc <- forecast_ic_unc %>%
+        mutate(value = ifelse(forecast_date == forecasted_dates[t] & ensemble_member == ens,
+                              forecasted_temperature, value))
+      
+      #store air temp same way storing ylag for wtemp
+      forecast_air_temp <- forecast_air_temp %>%
+        mutate(air_temperature = ifelse(
+          forecast_date == forecasted_dates[t] & ensemble_member == ens,
+          temp_driv$air_temperature[1],
+          air_temperature
+        ))
+      
+      #before forecasting computing average for last 7 days (bc this might include forecasted dates
+      #AND historical dates)
+      
+      # put all the relevant information into a tibble that we can bind together
+      curr_site_df <- tibble(datetime = forecasted_dates[t],
+                             site_id = curr_site,
+                             parameter = met_ens,
+                             prediction = forecasted_temperature,
+                             variable = "temperature") #Change this if you are forecasting a different variable
+      forecast_df <- dplyr::bind_rows(forecast_df, curr_site_df)
+      
+    }
+  }
+  
+  message(curr_site, ' forecast run')
+  
+}
+
+#---- Covert to EFI standard ----
+
+# Make forecast fit the EFI standards
+forecast_df_EFI <- forecast_df %>%
+  filter(datetime > forecast_date) %>%
+  mutate(model_id = my_model_id,
+         reference_datetime = forecast_date,
+         family = 'ensemble',
+         duration = 'P1D',
+         parameter = as.character(parameter),
+         project_id = 'neon4cast') %>%
+  select(datetime, reference_datetime, duration, site_id, family, parameter, variable, prediction, model_id, project_id)
+#---------------------------#
+
+# ----- Submit forecast -----
+# Write the forecast to file
+theme <- 'aquatics'
+date <- forecast_df_EFI$reference_datetime[1]
+forecast_name <- paste0(forecast_df_EFI$model_id[1], ".csv")
+forecast_file <- paste(theme, date, forecast_name, sep = '-')
+write_csv(forecast_df_EFI, forecast_file)
+```
+
+2.  Access observations
+
+```{r}
+#| echo: false
+url <- "https://sdsc.osn.xsede.org/bio230014-bucket01/challenges/targets/project_id=neon4cast/duration=P1D/aquatics-targets.csv.gz"
+targets <- read_csv(url)
+
+# Filter to only the datetime, variable, and site_id that match our single forecast
+targets_single_forecast <- targets |> 
+  mutate(datetime = as_datetime(datetime))|>
+  filter(datetime >= as_datetime("2025-03-24 00:00:00"),
+         datetime <= as_datetime("2025-04-28 00:00:00"),
+         variable == "temperature",
+         site_id == "BARC")
+```
+
+    6.  Using the scoringRules package, calculate the CRPS for each model and forecasted datetime.
+
+    ```{r}
+    obs <- targets_single_forecast |> select(datetime, observation)
+
+    # Climatology is normal distribution (mu, sigma)
+    clim_crps <- my_forecasts |>
+      filter(model_id == "climatology") |>
+      pivot_wider(names_from = parameter, values_from = prediction) |>
+      inner_join(obs, by = "datetime") |>
+      mutate(crps = crps_norm(y = observation, mean = mu, sd = sigma)) |>
+      select(datetime, model_id, crps)
+
+    # Persistence has ensemble
+    pers_crps <- my_forecasts |>
+      filter(model_id == "persistenceRW") |>
+      inner_join(obs, by = "datetime") |>
+      group_by(datetime, model_id) |>
+      summarise(crps = crps_sample(y = unique(observation), dat = prediction),
+                .groups = "drop")
+
+    # RF model also has ensemble
+    rf_crps <- new_model |>
+      filter(model_id == "bee_bake_RFModel_2024") |>
+      inner_join(obs, by = "datetime") |>
+      group_by(datetime, model_id) |>
+      summarise(crps = crps_sample(y = unique(observation), dat = prediction),
+                .groups = "drop")
+
+    crps_all <- bind_rows(clim_crps, pers_crps, rf_crps)
+    crps_all
+    ```
+
+    7.  Plot how CRPS performance over horizon
+
+```{r}
+ggplot(crps_all, aes(x = datetime, y = crps, color = model_id)) +
+  geom_line() +
+  geom_point() +
+  labs(y = "CRPS", color = "model")
+```
+
+8.  Download all the forecasts generated by climatology, persistence, and MY MODEL.
+I am going to do from January 2025-January 2026
+
+    ```{r}
+    all_forecasts_full <- duckdbfs::open_dataset(
+      "s3://bio230014-bucket01/challenges/forecasts/bundled-parquet/project_id=neon4cast/duration=P1D/variable=temperature",
+      s3_endpoint = "sdsc.osn.xsede.org",
+      anonymous = TRUE
+    ) |>
+      filter(reference_datetime >= as_datetime("2025-01-01 00:00:00"),
+             reference_datetime <= as_datetime("2026-01-01 00:00:00"),
+         site_id == "BARC",
+         model_id %in% c("climatology", "persistenceRW")) |> 
+  collect() 
+
+    #write_csv(all_forecasts_full, "all_forecasts_full.csv")
+    ```
+
+9.  Calculate the mean CRPS for climatology, persistence, and your model for all reference datetimes and horizons. Which model has the lower score when you consider all submissions?
+
+    ```{r}
+    obs_all <- targets |>
+      mutate(datetime = as_datetime(datetime)) |>
+      filter(variable == "temperature", site_id == "BARC") |>
+      select(datetime, observation)
+
+    # Climatology (normal)
+    clim_all <- all_forecasts_full |>
+      filter(model_id == "climatology") |>
+      pivot_wider(names_from = parameter, values_from = prediction) |>
+      inner_join(obs_all, by = "datetime") |>
+      filter(!is.na(observation), !is.na(mu), !is.na(sigma)) |>
+      mutate(crps = crps_norm(y = observation, mean = mu, sd = sigma)) |>
+      select(reference_datetime, datetime, model_id, crps)
+
+    # Persistence models
+    ens_all <- all_forecasts_full |>
+      filter(model_id %in% c("persistenceRW")) |>
+      inner_join(obs_all, by = "datetime") |>
+      filter(!is.na(observation), !is.na(prediction)) |>
+      group_by(reference_datetime, datetime, model_id) |>
+      summarise(crps = crps_sample(y = unique(observation), dat = prediction),
+                .groups = "drop")
+
+    crps_full <- bind_rows(clim_all, ens_all)
+
+    mean_crps <- crps_full |>
+      group_by(model_id) |>
+      summarise(mean_crps = mean(crps, na.rm = TRUE),
+                n = n(),
+                .groups = "drop") |>
+      arrange(mean_crps)
+    mean_crps
+    ```
+
+so now I will do the same thing with my model but first I have to run the forecast through the year
+```{r}
+
+```
+
+
+
+
+
+10. Do you think you have enough information from the mean CRPS score to determine the “best” model? If not, what is needed to better characterize the best-performing model?
